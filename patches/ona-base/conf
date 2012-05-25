@@ -1,0 +1,85 @@
+#!/bin/bash -ex
+#
+# This assumes a LAMP TKL starting point to add
+# OpenNetAdmin to.
+#
+# By Matt Pascoe <matt@opennetadmin.com>
+# http://github.com/opennetadmin/tklona
+# 
+# Use at your own risk and all that jazz
+
+HOSTNAME=tkl-ona
+ONABASE="/opt/ona"
+
+# set hostname
+echo "$HOSTNAME" > /etc/hostname
+sed -i "s|127.0.1.1 \(.*\)|127.0.1.1 $HOSTNAME|" /etc/hosts
+
+# TODO: create a prompt to set up a static IP?
+
+# start mysql and apache daemon
+/etc/init.d/mysql start
+/etc/init.d/apache2 start
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get -y \
+    -o DPkg::Options::=--force-confdef \
+    -o DPkg::Options::=--force-confold \
+    install php5-gmp nmap
+
+# Install ONA from github. Would require internet access.
+# Also this is getting the master branch.  Its usually stable! :)
+# TODO: maybe just do a git checkout so it would be super easy
+# for people to just do an update to get the latest ONA code???? ugh
+curl -kL -o /opt/onamaster.tgz https://github.com/opennetadmin/ona/tarball/master
+
+# unzip tarball.  TODO: add some tests here, for now just hoping
+# it was downloaded ok.
+mkdir /opt/ona
+tar --strip-components=1 -C $ONABASE -zxvf /opt/onamaster.tgz
+
+# set files to be writable by webserver
+touch /var/log/ona.log
+chown -R www-data: ${ONABASE}/www/local/config /var/log/ona.log
+
+# set up apache sites
+a2dissite default
+a2ensite ona
+
+# complete installation
+echo $ONABASE > /etc/onabase
+
+# Install DCM.PL tool
+curl -kL -o /opt/dcmmaster.tgz https://github.com/opennetadmin/dcm/tarball/master
+tar --strip-components=1 -C ${ONABASE}/bin -zxvf /opt/dcmmaster.tgz
+rm ${ONABASE}/bin/dcm.conf
+rm ${ONABASE}/bin/README.md
+
+############ This part is not required ###############
+# set up nmap scan plugin automatically
+# this is a nice thing for auditing your network..
+# maybe some people wont like it on by default?
+mkdir -p ${ONABASE}/www/local/nmap_scans/subnets
+ln -s ${ONABASE}/www/plugins/ona_nmap_scans/nmap_scan_cron ${ONABASE}/bin/nmap_scan_cron
+cp ${ONABASE}/www/plugins/ona_nmap_scans/nmap.xsl ${ONABASE}/www/local/nmap_scans/subnets/nmap.xsl
+
+CRON=<<-EOF
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin/:/opt/ona/bin
+# Perform a daily nmap ping scan and update last_response
+# Found it is best to ping during the day to pick up laptops that might be gone at night
+0 11 * * * root nmap_scan_cron -a -u > /dev/null 2>&1
+EOF
+
+# Put our cron stuff into an ONA cron
+echo $CRON > /etc/cron.d/ona
+
+############### End not required ####################
+
+# TODO: maybe at some point we could invoke the installer with some default
+# values... problem is usernames/passwords etc
+#curl http://127.0.0.1/?installurlstuffs-here >/dev/null
+
+# stop mysql and apache daemon
+# MP: not sure why this is. still learing tklpatch
+/etc/init.d/apache2 stop
+/etc/init.d/mysql stop
